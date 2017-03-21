@@ -2,11 +2,12 @@ package main
 
 import (
 	"encoding/json"
-	"strconv"
-	"log"
 	"fmt"
 	"flag"
+	"io/ioutil"
+	"log"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/boltdb/bolt"
@@ -20,6 +21,7 @@ const postFormKey string = "url"
 var db *bolt.DB
 
 type Url struct {
+	Key string
 	TargetUrl string
 }
 
@@ -27,7 +29,7 @@ type Url struct {
 func DbConnect(d string) {
 	var err error
 	if db, err = bolt.Open(d, 0600, nil); err != nil {
-		log.Fatalln("Bolt Driver Error: ", err)
+		log.Fatalln("Bolt Driver Error", err)
 	}
 }
 
@@ -35,17 +37,11 @@ func DbClose() {
 	db.Close()
 }
 
-// Update makes a modification to Bolt
-func DbAddEntry(dataStruct interface{}) error {
+// Add Url to Bolt
+func AddUrl(u *Url) error {
 	err := db.Update(func(tx *bolt.Tx) error {
 		// Create the bucket
 		bucket, e := tx.CreateBucketIfNotExists([]byte(bucketName))
-		if e != nil {
-			return e
-		}
-
-		// Encode the record
-		encodedRecord, e := json.Marshal(dataStruct)
 		if e != nil {
 			return e
 		}
@@ -55,7 +51,15 @@ func DbAddEntry(dataStruct interface{}) error {
 		id, _ := bucket.NextSequence()
 		// TODO use shiftAmount
 		key := IntToBase58str(int(id))
-		fmt.Println("The answer is:", key)
+
+		// Update Url with resulted key
+		u.Key = key
+
+		// Encode the record
+		encodedRecord, e := json.Marshal(u)
+		if e != nil {
+			return e
+		}
 
 		// Store the record
 		if e = bucket.Put([]byte(key), encodedRecord); e != nil {
@@ -67,7 +71,7 @@ func DbAddEntry(dataStruct interface{}) error {
 }
 
 // View retrieves a record in Bolt
-func DbGetEntry(key string, dataStruct interface{}) error {
+func GetUrl(key string, u *Url) error {
 	err := db.View(func(tx *bolt.Tx) error {
 		// Get the bucket
 		b := tx.Bucket([]byte(bucketName))
@@ -82,7 +86,7 @@ func DbGetEntry(key string, dataStruct interface{}) error {
 		}
 
 		// Decode the record
-		e := json.Unmarshal(v, &dataStruct)
+		e := json.Unmarshal(v, &u)
 		if e != nil {
 			return e
 		}
@@ -105,9 +109,11 @@ func IntToBase58str(i int) string {
 func redirectHandler(w http.ResponseWriter, r *http.Request) {
 	// Get Url object from database
 	url := Url{}
-	err := DbGetEntry(r.URL.Path[1:], &url)
+	err := GetUrl(r.URL.Path[1:], &url)
+	// TODO handle if key not found
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
 	}
 
 	// Redirect only if target url starts with http
@@ -137,47 +143,56 @@ func createHandler(w http.ResponseWriter, r *http.Request) {
 	v := r.PostFormValue(postFormKey)
 	if !strings.HasPrefix(v, "http") {
 		http.Error(w, "Incorrect input", http.StatusBadRequest)
+		return
 	}
 
 	// Declare url and assign input from request
-	url := &Url{
+	url := Url{
 		TargetUrl: v,
 	}
 
 	// Add url to db
-	err = DbAddEntry(&url)
+	err = AddUrl(&url)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
 	}
+
+	// Print resulted url
+	fmt.Fprintf(w, url.Key)
 }
 
 func indexHandler(w http.ResponseWriter, r *http.Request) {
-	http.Error(w, "Not implemented", http.StatusNotImplemented)
+	// TODO Use real template
+	b, err := ioutil.ReadFile("template/index.html")
+	if err != nil {
+		log.Fatalln("Error reading template", err)
+	}
+	fmt.Fprintf(w, string(b))
 }
 
 func main() {
 	// Parse cli flags
-	// urlcutter -dbpath foo.db -listen 0.0.0.0:8080
-	dbpathPtr := flag.String("dbpath", "urlcutter.db", "File path for Bolt database. Created automatically if does not exist.")
-	listenPtr := flag.String("listen", ":8080", "TCP socket to listen on. For example, 0.0.0.0:8080")
+	// Example: urlcutter -dbpath foo.db -listen 0.0.0.0:8080
+	dbpathPtr := flag.String("dbpath",
+		"urlcutter.db",
+		"File path for Bolt database. Created automatically if does not exist.")
+	listenPtr := flag.String("listen",
+		":8080",
+		"TCP socket to listen on. For example, 0.0.0.0:8080")
 	flag.Parse()
 
 	// Connect to Bolt
 	DbConnect(*dbpathPtr)
 	defer DbClose()
 
-	// Play with Bolt
-	//url := &Url{
-	//	TargetUrl: "http://example.com",
-	//}
-	//DbAddEntry(&url)
-	//url1 := Url{}
-	//DbGetEntry("e", &url1)
-	//fmt.Println("Entry:", url1.TargetUrl)
-
+	// Handlers
 	http.HandleFunc("/", redirectHandler)
 	http.HandleFunc("/create", createHandler)
+
+	// Entry handler
 	http.HandleFunc("/urlcutter", indexHandler)
+
 	// Get config and serve
 	http.ListenAndServe(*listenPtr, nil)
 }
