@@ -7,7 +7,7 @@ Tiny Base58 link shortener written in Go. [BotlDB](https://github.com/boltdb/bol
 TBD
 
 ## TODO
-  - Write simple html index page
-  - Write tests
+  - Add frontend
+  - Start from bigger key, not 1
 
 ## Known issues
